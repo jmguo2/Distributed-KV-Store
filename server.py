@@ -143,7 +143,7 @@ def tcp_send(send_socket, message):
 
 def print_send_time(message, destination):
     time = str(datetime.now())
-    print("\tSent \"" + message + "\" to process " + str(destination) + ", system time is " + time)
+    # print("\tSent \"" + message + "\" to process " + str(destination) + ", system time is " + time)
 
 # delay the unicast send by a random delay specified in the config file 
 def delayed_send(send_socket, message, delay=None):
@@ -210,12 +210,12 @@ def casual_order_send(cli_arg):
     global pid_to_socket, pid_to_vector, server_pid
     message = cli_arg[1]
     pid_to_vector[server_pid][server_pid] += 1 # increment process i's count of messages from i 
-    print("\tSend casual: ")
-    print_vector(pid_to_vector[server_pid])
+    # print("\tSend casual: ")
+    # print_vector(pid_to_vector[server_pid])
     encoded_msg = encode_vector(message)
     for pid, socket in pid_to_socket.iteritems():
         socket = pid_to_socket[pid]
-        print_send_time(message, pid)
+        # print_send_time(message, pid)
         if(pid != server_pid):
             delayed_send(socket, encoded_msg)
         else:
@@ -239,7 +239,7 @@ def casual_order_receive(server, decoded_vec):
     global message_queue
     client_pid = address_to_pid[server.getpeername()]
     message = decoded_vec[0].strip()
-    print_receive_time(client_pid, message)
+    # print_receive_time(client_pid, message)
     if(client_pid != server_pid):
         will_deliver = check_casuality(decoded_vec, client_pid)
         if(will_deliver):   
@@ -296,11 +296,11 @@ def key_value_handler(message, sender_pid):
     if(split_msg[0] == 'put'):
         # sender_pid is the sender's pid 
         ec_receive_put(split_msg, sender_pid)
-    elif(split_msg[0] == 'put_ack'):
+    elif(split_msg[0] == 'put_ack' and key_to_write_counter[split_msg[1].strip()] != 0): # if the counter is 0, that means the write has completed 
         receive_put_ack(split_msg)
     elif(split_msg[0] == 'get'):
         ec_receive_get(split_msg, sender_pid)
-    elif(split_msg[0] == 'get_ack'): 
+    elif(split_msg[0] == 'get_ack' and key_to_read_counter[split_msg[1].strip()] != 0): 
         receive_read_ack(split_msg)
 
 def ec_put(key, value):
@@ -311,12 +311,14 @@ def ec_put(key, value):
     key_to_write_counter[key] = 0
     if(key not in key_to_timestamp or key_to_timestamp[key] < timestamp):
         key_to_timestamp[key] = timestamp
-        key_value[key] = value 
+        key_value[key] = value
+        key_to_write_counter[key] = 1 
+
     print('Client calling PUT operation')
     casual_order_send(multicast_arg)
 
 # message format is 'put', key, value, timestamp delimited by commas
-
+# for put, ask whether we log the last written timestamp from a replica 
 def ec_receive_put(message, sender_pid):
     print(message)
     key = message[1].strip()
@@ -341,11 +343,9 @@ def receive_put_ack(message):
     key_to_write_counter[key] += 1
     print('Client received PUT ack')
     if(key_to_write_counter[key] == write_to_count):
-        print('Wrote to ' + str(write_to_count) + 'replicas')
-        # where to get timestamp from? temp solution here
-        timestamp = int(time.time())
-        # casual_order_send('msend', ['put_complete', key], 'casual')
-        write_to_file(server_pid, 'put', key, timestamp, 'req', key_value[key])
+        print('Finished writing to ' + str(write_to_count) + 'replicas')
+        # is the timestamp here the last-write timestamp?
+        write_to_file(server_pid, 'put', key, key_to_timestamp[key], 'req', key_value[key])
         key_to_write_counter[key] = 0
 
 # def receive_write_complete(message):
@@ -358,6 +358,11 @@ def ec_get(key):
     timestamp = str(datetime.now())
     key_to_read_counter[key] = 0
     print('Client calling GET operation')
+    if(key in key_to_timestamp and key in key_value):
+        get_key_to_timestamp[key] = key_to_timestamp[key]
+        get_last_writer_value[key] = key_value[key]
+        key_to_read_counter[key] = 1 
+
     casual_order_send(['msend', message, 'casual'])
     write_to_file(server_pid, 'get', key, timestamp, 'resp', None)
 
@@ -381,6 +386,7 @@ def receive_read_ack(message):
     if(key not in get_key_to_timestamp or timestamp > get_key_to_timestamp[key]):
         get_key_to_timestamp[key] = timestamp
         get_last_writer_value[key] = value 
+
     key_to_read_counter[key] += 1
     if(key_to_read_counter[key] == read_from_count):
         print('Client GET has read from key: ' + key + ' the value: ' + str(get_last_writer_value[key]))
