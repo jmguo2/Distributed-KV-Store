@@ -35,7 +35,7 @@ class listener_thread (threading.Thread):
                 else:        
                     data = s.recv(recv_limit)
                     if(data):
-                        for fmt_string in [casual_fmt_string, unicast_fmt_string, reset_fmt_string]:
+                        for fmt_string in [lamport_fmt_string, unicast_fmt_string, reset_fmt_string]:
                             try:
                                 decoded_msg = decode_message(fmt_string, data)      # decode will fail if the encoding doesn't match the format string
                                 break
@@ -43,8 +43,8 @@ class listener_thread (threading.Thread):
                                 continue
                         if fmt_string == unicast_fmt_string:
                             unicast_receive(s, decoded_msg)
-                        elif fmt_string == casual_fmt_string:
-                            casual_order_receive(s, decoded_msg)
+                        elif fmt_string == lamport_fmt_string:
+                            lamport_receive(s, decoded_msg)
                         elif fmt_string == reset_fmt_string:
                             reset()
 
@@ -53,7 +53,7 @@ class listener_thread (threading.Thread):
 def server_init():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(server_binding_addr)
+    server.bind(('', port_value))
     server.listen(pid_count)
     return server 
 
@@ -83,10 +83,8 @@ class client_thread (threading.Thread):
             cli_arg = raw_argument.strip().split(' ')
             if(cli_arg[0] == 'send'): 
                 unicast_send(destination=cli_arg[1], message=cli_arg[2])
-            elif(cli_arg[0] == 'msend' and cli_arg[-1] == 'casual'):
-                casual_order_send(cli_arg)
-            elif(cli_arg[0] in ["reset", "switch", "s"]):
-                send_reset()
+            elif(cli_arg[0] == 'lsend'):
+                lamport_send(cli_arg)
             elif(cli_arg[0] in ["q", "quit", "exit"]):
                 self.running = False
                 self.listener_thread.stop()
@@ -171,8 +169,8 @@ def unicast_send(destination, message):
 def unicast_receive(server, decoded_msg):
     data = decoded_msg[0].strip()
     pid_from = address_to_pid[server.getpeername()]
-    print_receive_time(pid_from, data)
-    key_value_handler(data, pid_from)
+    # print_receive_time(pid_from, data)
+    key_value_handler(data, pid_from, decoded_msg)
 
 # encode the unicasted message as binary data
 # msg format is the extended_message
@@ -206,96 +204,53 @@ def get_unicast_fmt_string():
 # increment the server's vector element corresponding to its own pid
 # encode the message and send it to all connected processes
 
-def casual_order_send(cli_arg):
-    global pid_to_socket, pid_to_vector, server_pid
+def lamport_send(cli_arg):
+    global pid_to_socket, pid_to_vector, server_pid 
     message = cli_arg[1]
-    pid_to_vector[server_pid][server_pid] += 1 # increment process i's count of messages from i 
-    # print("\tSend casual: ")
-    # print_vector(pid_to_vector[server_pid])
+    pid_to_timestamp[server_pid] += 1
+    print("At server number: " + str(server_pid) + "the timestamp is: " + str(pid_to_timestamp[server_pid]) + '\n')
     encoded_msg = encode_vector(message)
     for pid, socket in pid_to_socket.iteritems():
         socket = pid_to_socket[pid]
-        # print_send_time(message, pid)
         if(pid != server_pid):
             delayed_send(socket, encoded_msg)
         else:
             tcp_send(socket, encoded_msg)
-
-# increment the value of the vector corresponding to the client_pid upon delivery
-
-def casual_order_delivery(client_pid, message):
-    global pid_to_vector
-    pid_to_vector[server_pid][client_pid] += 1
-    key_value_handler(message, client_pid)
-    # print("\tDelivery casual: ")
-    # print_vector(pid_to_vector[server_pid])
 
 # receive handler for casual ordering, which checks if the received message can be delivered 
 # if client == server, print the received time 
 # if client != server, deliver message if its ready and then recursively deliver queued messages
 # if message can't be delivered, put the vector in the hold back queue  
 
-def casual_order_receive(server, decoded_vec):
-    global message_queue
+def lamport_receive(server, decoded_vec): 
     client_pid = address_to_pid[server.getpeername()]
-    message = decoded_vec[0].strip()
-    # print_receive_time(client_pid, message)
     if(client_pid != server_pid):
-        will_deliver = check_casuality(decoded_vec, client_pid)
-        if(will_deliver):   
-            casual_order_delivery(client_pid, message)
-            recursive_delivery()
-        else:
-            message_queue[client_pid].append(decoded_vec)
-
-# recursively check for casuality of messages in hold back queue  
-# called after delivering a message, since casuality may be fulfilled 
-
-def recursive_delivery():
-    global message_queue
-    for client_pid, vector_list in message_queue.iteritems():
-        for index, vector in enumerate(vector_list):
-            if(check_casuality(vector, client_pid)):
-                del vector_list[index]
-                casual_order_delivery(client_pid)
-                recursive_delivery()
+        message = decoded_vec[0].strip()
+        key_value_handler(message, client_pid, decoded_vec)
 
 # return a format string for casual ordering 
 # used by struct module to encode/decode data 
 
-def get_casual_fmt_string():
-    vec_len = str(pid_count)
+def get_lamport_fmt_string():
     string_lim = str(msg_limit)
-    fmt_string =  string_lim + 's ' + vec_len + 'i'
+    fmt_string =  string_lim + 's ' + '1i'
     return fmt_string 
 
 # encode the server's vector as binary data 
-# casual message format will be (extended_message, vec[1], vec[2], vec[3], vec[4])
+# casual message format will be (extended_message, timestamp)
 
 def encode_vector(message):
-    own_vector = pid_to_vector[server_pid]
+    lamport_timestamp = pid_to_timestamp[server_pid]
     extended_message = extend_message(message)
-    own_vector[0] = extended_message
-    buf = struct.pack(casual_fmt_string, *own_vector)
+    buf = struct.pack(lamport_fmt_string, extended_message, lamport_timestamp)
     return buf 
 
-# verify whether we can deliver the multicasted message
-# compare the client broadcasted vector to the server's vector 
-
-def check_casuality(client_vec, client_pid):
-    if(client_vec[client_pid] != pid_to_vector[server_pid][client_pid]+1):      # check to make sure its the right message from the client
-        return 0
-    for pid in range(1, pid_count+1):        
-        if(pid != client_pid and pid_to_vector[server_pid][pid] < client_vec[pid]):  # make sure we've seen everything that the client has seen 
-            return 0
-    return 1
-
 # key value store functions ---------------------------------------------------------------------------------------------------------------
-def key_value_handler(message, sender_pid):
+def key_value_handler(message, sender_pid, decoded_vec):
     split_msg = message.split(",")
     if(split_msg[0] == 'put'):
         # sender_pid is the sender's pid 
-        ec_receive_put(split_msg, sender_pid)
+        ec_receive_put(split_msg, sender_pid, int(decoded_vec[1]))
     elif(split_msg[0] == 'put_ack' and key_to_write_counter[split_msg[1].strip()] != 0): # if the counter is 0, that means the write has completed 
         receive_put_ack(split_msg)
     elif(split_msg[0] == 'get'):
@@ -305,35 +260,32 @@ def key_value_handler(message, sender_pid):
 
 def ec_put(key, value):
     timestamp = int(time.time())
-    message = 'put, ' + str(key) + ', ' + str(value) + ', ' + str(timestamp)
-    multicast_arg = ['msend', message, 'casual']
     write_to_file(server_pid, 'put', key, timestamp, 'req', value)
-    key_to_write_counter[key] = 0
-    if(key not in key_to_timestamp or key_to_timestamp[key] < timestamp):
-        key_to_timestamp[key] = timestamp
-        key_value[key] = value
-        key_to_write_counter[key] = 1 
+    message = 'put, ' + str(key) + ', ' + str(value) 
+    lamport_arg = ['lsend', message]
+    key_to_timestamp[key] = timestamp
+    key_value[key] = value
+    key_to_write_counter[key] = 1 
+    print('Client calling PUT operation\n')
+    lamport_send(lamport_arg)
 
-    print('Client calling PUT operation')
-    casual_order_send(multicast_arg)
-
-# message format is 'put', key, value, timestamp delimited by commas
+# message format is 'put', key, value delimited by commas
 # for put, ask whether we log the last written timestamp from a replica 
-def ec_receive_put(message, sender_pid):
-    print(message)
+
+def ec_receive_put(message, sender_pid, timestamp):
     key = message[1].strip()
-    timestamp = int(message[-1])
-    if(key not in key_to_timestamp or key_to_timestamp[key] < timestamp): # if local time < timestamp, last writer wins 
+    old_timestamp = pid_to_timestamp[server_pid]
+    if(key not in pid_to_timestamp or pid_to_timestamp[server_pid] < timestamp): # if local time < timestamp, last writer wins 
         value = int(message[2])
         key_value[key] = value 
-        key_to_timestamp[key] = timestamp # update local_time afterwards
-        put_ack_msg = 'put_ack, ' + str(key) + ', ' + str(timestamp) + ', success'
-        print('Replica sending PUT operation ack success')
-        unicast_send(sender_pid, put_ack_msg) # ack for complete write
+        pid_to_timestamp[server_pid] = timestamp + 1
+        print('Replica sending PUT operation ack success. Old timestamp was: ' + str(old_timestamp) + ' New timestamp is: ' + str(pid_to_timestamp[server_pid]) + '\n')
     else:
-        put_ack_msg = 'put_ack, ' + str(key) + ', ' + 'failure'
-        print('Replica sending PUT operation ack failure')
-        unicast_send(sender_pid, put_ack_msg) # ack for ignore write
+        pid_to_timestamp[server_pid] += 1 
+        print('Replica sending PUT operation ack failure. Old timestamp was: ' + str(old_timestamp) + ' New timestamp is: ' + str(pid_to_timestamp[server_pid]) + '\n')
+    put_ack_msg = 'put_ack, ' + str(key) 
+    unicast_send(sender_pid, put_ack_msg) # ack for ignore write
+
 
 # message format is ['put', key, 'success/failure']
 
@@ -341,30 +293,25 @@ def receive_put_ack(message):
     global key_to_write_counter
     key = message[1].strip()
     key_to_write_counter[key] += 1
-    print('Client received PUT ack')
     if(key_to_write_counter[key] == write_to_count):
-        print('Finished writing to ' + str(write_to_count) + 'replicas')
-        # is the timestamp here the last-write timestamp?
-        write_to_file(server_pid, 'put', key, key_to_timestamp[key], 'req', key_value[key])
+        print('Finished writing to ' + str(write_to_count) + 'replicas\n')
+        write_to_file(server_pid, 'put', key, int(time.time()), 'req', key_value[key])
         key_to_write_counter[key] = 0
-
-# def receive_write_complete(message):
-#     # do we need this?
-
 
 # multicast the get operation to all replicas  
 def ec_get(key):
     message = 'get, ' + str(key)
     timestamp = str(datetime.now())
-    key_to_read_counter[key] = 0
-    print('Client calling GET operation')
-    if(key in key_to_timestamp and key in key_value):
-        get_key_to_timestamp[key] = key_to_timestamp[key]
-        get_last_writer_value[key] = key_value[key]
-        key_to_read_counter[key] = 1 
-
-    casual_order_send(['msend', message, 'casual'])
     write_to_file(server_pid, 'get', key, timestamp, 'resp', None)
+    print('Client calling GET operation\n')
+    key_to_read_counter[key] = 1 
+    if(key in get_key_to_timestamp):
+        get_key_to_timestamp[key] = pid_to_timestamp[server_pid]
+        get_last_writer_value[key] = key_value[key]
+    else:
+        get_key_to_timestamp[key] = 0
+        get_last_writer_value[key] = None
+    lamport_send(['lsend', message])
 
 # each replica that receives the get operation sends its value back
 # message format is 'get, key'
@@ -372,9 +319,9 @@ def ec_get(key):
 def ec_receive_get(message, sender_pid):
     key = message[-1].strip()
     value = key_value[key]
-    timestamp = key_to_timestamp[key]
+    timestamp = pid_to_timestamp[server_pid]
     replica_message = 'get_ack, ' + str(key) + ', ' + str(value) + ', ' + str(timestamp)
-    print('Replica sending GET operation ack with key: ' + key + 'and value: ' + str(value))
+    print('Replica sending GET operation ack with key: ' + key + 'and value: ' + str(value) + '\n')
     unicast_send(sender_pid, replica_message)
 
 def receive_read_ack(message):
@@ -382,42 +329,24 @@ def receive_read_ack(message):
     key = message[1].strip()
     value = int(message[2])
     timestamp = int(message[-1])
-    print('Client collecting GET ack responses')
+    key_to_read_counter[key] += 1
     if(key not in get_key_to_timestamp or timestamp > get_key_to_timestamp[key]):
         get_key_to_timestamp[key] = timestamp
         get_last_writer_value[key] = value 
 
-    key_to_read_counter[key] += 1
     if(key_to_read_counter[key] == read_from_count):
-        print('Client GET has read from key: ' + key + ' the value: ' + str(get_last_writer_value[key]))
-        write_to_file(server_pid, 'get', key, get_key_to_timestamp[key], 'resp', get_last_writer_value[key])
+        print('Client GET has read from key: ' + key + ' the value: ' + str(get_last_writer_value[key]) + '\n')
+        write_to_file(server_pid, 'get', key, int(time.time()), 'resp', get_last_writer_value[key])
         key_to_read_counter[key] = 0
-
-# testing functions -----------------------------------------------------------------------------------------------------------------------
-
-def print_vector(vector):
-    vec_list = []
-    for index, item in enumerate(vector):
-        if(index != 0):
-            vec_list.append(item)
-    print(tuple(vec_list))
-        
-def reset():
-    print "\tReceived reset message"
-    global pid_to_vector, message_queue
-    for pid in range(1, pid_count+1):
-        pid_to_vector[pid] = [0] * (pid_count+1)
-    message_queue.clear()
-    
-
 
 # entry point --------------------------------------------------------------------------------------------------------------------------
 
 # read the config file and initialize various dictionaries that map between pid and info about the server
 # initialize format strings and initialize any global variables that are commonly accessed 
 # start the client and server threads 
+
 message_queue = defaultdict(list)
-pid_to_vector = {}
+pid_to_timestamp = {}
 pid_to_address = {}
 address_to_pid = {}
 pid_to_socket = {}
@@ -441,23 +370,24 @@ if len(sys.argv) == 5:
     read_from_count = int(sys.argv[4])
 
 inputs = []
+port_value = 0 
 
 with open("config.txt", "r") as file:
     delay = file.readline()
     for row in file:
         if(row not in ['\n', '\r\n']):
             stripped = row.strip()
-            pid, ip, port = stripped.split(' ')
+            pid, hostname, port = stripped.split(' ')
+            port_value = int(port)
             pid = int(pid)
-            client_address = (str(ip), int(port))
+            ip = socket.gethostbyname(hostname)
+            client_address = (ip, port_value)
             pid_to_address[pid] = client_address
             address_to_pid[client_address] = pid
             pid_count = pid_count + 1 
 
-for pid in range(1, pid_count+1):
-    pid_to_vector[pid] = [0] * (pid_count+1)
-
-casual_fmt_string = get_casual_fmt_string()
+pid_to_timestamp[server_pid] = 0
+lamport_fmt_string = get_lamport_fmt_string()
 unicast_fmt_string = get_unicast_fmt_string()
 reset_fmt_string = '???'
 server_binding_addr = pid_to_address[server_pid]

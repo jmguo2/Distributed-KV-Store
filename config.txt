@@ -1,6 +1,12 @@
 3 10
-1 127.0.0.1 4000
-2 127.0.0.1 5000
-3 127.0.0.1 6000
-4 127.0.0.1 7000
+1 sp18-cs425-g11-01.cs.illinois.edu 1200
+2 sp18-cs425-g11-02.cs.illinois.edu 1200
+3 sp18-cs425-g11-03.cs.illinois.edu 1200
+4 sp18-cs425-g11-04.cs.illinois.edu 1200
+5 sp18-cs425-g11-05.cs.illinois.edu 1200
+6 sp18-cs425-g11-06.cs.illinois.edu 1200
+7 sp18-cs425-g11-07.cs.illinois.edu 1200
+8 sp18-cs425-g11-08.cs.illinois.edu 1200
+9 sp18-cs425-g11-09.cs.illinois.edu 1200
+
 

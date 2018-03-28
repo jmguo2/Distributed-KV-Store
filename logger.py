@@ -3,7 +3,6 @@ import os.path
 def write_to_file(pid, method, key, timestamp, reqresp, value):
 	file_name = 'log' + str(pid) + '.txt'
 	abs_path = (os.getcwd() + '/' + file_name)
-	print(abs_path)
 	if(os.path.exists(abs_path)):
 		f = open(file_name, 'a')
 	else:
