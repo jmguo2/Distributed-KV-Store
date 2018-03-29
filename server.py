@@ -43,7 +43,7 @@ class listener_thread (threading.Thread):
                         if fmt_string == unicast_fmt_string:
                             unicast_receive(s, decoded_msg)
                         elif fmt_string == lamport_fmt_string:
-                            lamport_receive(s, decoded_msg)
+                            multicast_receive(s, decoded_msg)
 
 
 # initialize the server and listen the port specified by the config file
@@ -181,9 +181,8 @@ def get_unicast_fmt_string():
 # increment the server's vector element corresponding to its own pid
 # encode the message and send it to all connected processes
 
-def lamport_send(message):
+def multicast_send(message):
     global pid_to_socket, server_pid 
-    pid_to_timestamp[server_pid] += 1
     print("At server number: " + str(server_pid) + "the timestamp is: " + str(pid_to_timestamp[server_pid]) + '\n')
     encoded_msg = encode_vector(message)
     for pid, socket in pid_to_socket.iteritems():
@@ -193,12 +192,16 @@ def lamport_send(message):
         else:
             tcp_send(socket, encoded_msg)
 
+def lamport_send(message):
+    pid_to_timestamp[server_pid] += 1
+    multicast_send(message)
+
 # receive handler for casual ordering, which checks if the received message can be delivered 
 # if client == server, print the received time 
 # if client != server, deliver message if its ready and then recursively deliver queued messages
 # if message can't be delivered, put the vector in the hold back queue  
 
-def lamport_receive(server, decoded_vec): 
+def multicast_receive(server, decoded_vec): 
     client_pid = address_to_pid[server.getpeername()]
     if(client_pid != server_pid):
         message = decoded_vec[0].strip()
@@ -296,7 +299,7 @@ def ec_get(key):
     else:
         get_key_to_timestamp[key] = 0
         get_last_writer_value[key] = None
-    lamport_send(message)
+    multicast_send(message)
 
 # each replica that receives the get operation sends its value back
 # message format is 'get, key'
@@ -376,7 +379,7 @@ def linear_receive_ack(split_msg):
             reply_to_request(request)
 
 def linear_put(key, value):
-    lamport_send('lput, ' + key + ', ' + str(value))
+    multicast_send('lput, ' + key + ', ' + str(value))
     timestamp = int(time.time())
     write_to_file(server_pid, 'put', key, timestamp, 'resp', value)
 
@@ -387,9 +390,10 @@ def linear_put_response(split_msg):
 
 def linear_get(key):
     write_to_file(server_pid, 'get', key, int(time.time()), 'req', None)
-    write_to_file(server_pid, 'get', key, int(time.time()), 'resp', key_value[key])
-    print('Received the value: ' + str(key_value[key]) + '\n')
-    return key_value[key]
+    return_value = key_value[key] if key in key_value else None
+    write_to_file(server_pid, 'get', key, int(time.time()), 'resp', return_value)
+    print('Received the value: ' + str(return_value) + '\n')
+    return return_value
 
 # entry point --------------------------------------------------------------------------------------------------------------------------
 
