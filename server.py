@@ -240,10 +240,6 @@ def msg_handler(message, sender_pid, decoded_vec):
         linear_put_request_receive(split_msg)
     elif(split_msg[0] == 'lreply'):
         linear_receive_ack(split_msg)
-    elif(split_msg[0] == 'lhold'):
-        linear_hold_lock()
-    elif(split_msg[0] == 'lunlock'):
-        linear_unlock()
     elif(split_msg[0] == 'lput'):
         linear_put_response(split_msg)
 
@@ -251,7 +247,6 @@ def ec_put(key, value):
     timestamp = int(time.time())
     write_to_file(server_pid, 'put', key, timestamp, 'req', value)
     message = 'eput, ' + str(key) + ', ' + str(value) 
-    key_to_timestamp[key] = timestamp
     key_value[key] = value
     key_to_write_counter[key] = 1 
     print('Client calling PUT operation\n')
@@ -263,13 +258,12 @@ def ec_put(key, value):
 def ec_receive_put(message, sender_pid, timestamp):
     key = message[1].strip()
     old_timestamp = pid_to_timestamp[server_pid]
-    if(key not in pid_to_timestamp or pid_to_timestamp[server_pid] < timestamp): # if local time < timestamp, last writer wins 
+    if(key not in pid_to_timestamp or old_timestamp < timestamp): # if local time < timestamp, last writer wins 
         value = int(message[2])
         key_value[key] = value 
-        pid_to_timestamp[server_pid] = timestamp + 1
+        pid_to_timestamp[server_pid] = timestamp # if their timestamp is bigger, our timestamp = theirs for last writer
         print('Replica sending PUT operation ack success. Old timestamp was: ' + str(old_timestamp) + ' New timestamp is: ' + str(pid_to_timestamp[server_pid]) + '\n')
     else:
-        pid_to_timestamp[server_pid] += 1 
         print('Replica sending PUT operation ack failure. Old timestamp was: ' + str(old_timestamp) + ' New timestamp is: ' + str(pid_to_timestamp[server_pid]) + '\n')
     put_ack_msg = 'eput_ack, ' + str(key) 
     unicast_send(sender_pid, put_ack_msg) # ack for ignore write
@@ -332,7 +326,7 @@ def receive_read_ack(message):
 def linear_put_request(key, value):
     global requested
     requested = 1
-    message = 'lputrequest, ' + str(pid_to_timestamp[server_pid]) + ', ' + str(server_pid) + ', ' + key + ', ' + str(value)
+    message = 'lputrequest, ' + str(pid_to_timestamp[server_pid]+1) + ', ' + str(server_pid) + ', ' + key + ', ' + str(value)
     key_to_write_counter[key] = 1 # include write to itself  
     timestamp = int(time.time())
     write_to_file(server_pid, 'put', key, timestamp, 'req', value)
@@ -379,13 +373,18 @@ def linear_receive_ack(split_msg):
             reply_to_request(request)
 
 def linear_put(key, value):
-    multicast_send('lput, ' + key + ', ' + str(value))
+    multicast_send('lput, ' + key + ', ' + str(value) + ', ' + str(pid_to_timestamp[server_pid]))
     timestamp = int(time.time())
     write_to_file(server_pid, 'put', key, timestamp, 'resp', value)
 
 def linear_put_response(split_msg):
     key = split_msg[1].strip()
     value = split_msg[2]
+    lamport_timestamp = int(split_msg[-1])
+    if(lamport_timestamp > pid_to_timestamp[server_pid]):
+        pid_to_timestamp[server_pid] = lamport_timestamp + 1
+    else:
+        pid_to_timestamp[server_pid] += 1
     key_value[key] = value
 
 def linear_get(key):
