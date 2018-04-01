@@ -229,7 +229,7 @@ def msg_handler(message, sender_pid, decoded_vec):
     split_msg = message.split(",")
     if(split_msg[0] == 'eput'):
         # sender_pid is the sender's pid 
-        ec_receive_put(split_msg, sender_pid, int(decoded_vec[1]))
+        ec_receive_put(split_msg, sender_pid, int(decoded_vec[-1]))
     elif(split_msg[0] == 'eput_ack' and key_to_write_counter[split_msg[1].strip()] != 0): # if the counter is 0, that means the write has completed 
         receive_put_ack(split_msg)
     elif(split_msg[0] == 'eget'):
@@ -246,7 +246,7 @@ def msg_handler(message, sender_pid, decoded_vec):
 def ec_put(key, value):
     timestamp = int(time.time())
     write_to_file(server_pid, 'put', key, timestamp, 'req', value)
-    message = 'eput, ' + str(key) + ', ' + str(value) 
+    message = 'eput, ' + str(key) + ', ' + str(value) + ', ' + str(pid_to_timestamp[server_pid]+1)
     key_value[key] = value
     key_to_write_counter[key] = 1 
     print('Client calling PUT operation\n')
