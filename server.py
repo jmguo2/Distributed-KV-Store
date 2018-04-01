@@ -244,6 +244,7 @@ def msg_handler(message, sender_pid, decoded_vec):
         linear_put_response(split_msg)
 
 def ec_put(key, value):
+    global key_to_write_counter, key_value
     timestamp = int(time.time())
     write_to_file(server_pid, 'put', key, timestamp, 'req', value)
     message = 'eput, ' + str(key) + ', ' + str(value) + ', ' + str(pid_to_timestamp[server_pid]+1)
@@ -256,6 +257,7 @@ def ec_put(key, value):
 # for put, ask whether we log the last written timestamp from a replica 
 
 def ec_receive_put(message, sender_pid, timestamp):
+    global key_value, pid_to_timestamp
     key = message[1].strip()
     old_timestamp = pid_to_timestamp[server_pid]
     if(key not in pid_to_timestamp or old_timestamp < timestamp): # if local time < timestamp, last writer wins 
@@ -282,6 +284,7 @@ def receive_put_ack(message):
 
 # multicast the get operation to all replicas  
 def ec_get(key):
+    global get_key_to_timestamp, get_last_writer_value, key_to_read_counter
     message = 'eget, ' + str(key)
     timestamp = str(datetime.now())
     write_to_file(server_pid, 'get', key, timestamp, 'resp', None)
@@ -307,7 +310,7 @@ def ec_receive_get(message, sender_pid):
     unicast_send(sender_pid, replica_message)
 
 def receive_read_ack(message):
-    global key_to_read_counter
+    global key_to_read_counter, get_key_to_timestamp, get_last_writer_value
     key = message[1].strip()
     value = int(message[2])
     timestamp = int(message[-1])
@@ -324,7 +327,7 @@ def receive_read_ack(message):
 # --------------------------------------------------------------------------------------------------------------------------------------
 
 def linear_put_request(key, value):
-    global requested
+    global requested, key_to_write_counter
     requested = 1
     message = 'lputrequest, ' + str(pid_to_timestamp[server_pid]+1) + ', ' + str(server_pid) + ', ' + key + ', ' + str(value)
     key_to_write_counter[key] = 1 # include write to itself  
@@ -333,6 +336,7 @@ def linear_put_request(key, value):
     lamport_send(message)
 
 def linear_put_request_receive(split_msg):
+    print('held is: ' + str(held) + ' requested is: ' + str(requested))
     if(held == 1 or (requested == 1 and lexicographical_comparison([int(split_msg[1]), int(split_msg[2])], [pid_to_timestamp[server_pid],server_pid]))):
         print('Queued up request\n')
         request_queue.append(split_msg)
@@ -357,20 +361,22 @@ def lexicographical_comparison(vector1, vector2):
         return 0
 
 def linear_receive_ack(split_msg):
-    global reply_counter
+    global reply_counter, requested, held, key_to_write_counter
     key = split_msg[1].strip()
     value = int(split_msg[2])
     key_to_write_counter[key] += 1
     if(key_to_write_counter[key] == len(pid_to_socket)):
-        print('Process' + str(server_pid) + 'is now in state HELD\n')
+        print('Process ' + str(server_pid) + ' is now in state HELD\n')
         held = 1
-        requested = 0
         key_value[key] = value
         linear_put(key, value)
         # exiting now   
         held = 0 
+        requested = 0
+        key_to_write_counter[key] = 0
         for request in request_queue:
             reply_to_request(request)
+        del request_queue[:]
 
 def linear_put(key, value):
     multicast_send('lput, ' + key + ', ' + str(value) + ', ' + str(pid_to_timestamp[server_pid]))
