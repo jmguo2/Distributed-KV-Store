@@ -9,6 +9,8 @@ import select
 import struct
 from collections import defaultdict
 from logger import write_to_file
+from pprint import pprint as pp
+import time
 
 # server thread will constantly poll for new connections/writes from clients 
 # if there is a new connection, accept it and associate that pid with a socket and address 
@@ -72,27 +74,32 @@ class client_thread (threading.Thread):
         while(self.running):
             raw_argument = raw_input("Enter command line argument for client: \n\t")
             cli_arg = raw_argument.strip().split(' ')
-            if(cli_arg[0] == 'put'):
+            if cli_arg[0] in ('put', 'p'):
                 key = cli_arg[1]
                 value = int(cli_arg[2])
                 if(consistency_model == 'E'):
                     ec_put(key, value)
                 elif(consistency_model == 'L'):
                     linear_put_request(key, value)
-            elif(cli_arg[0] == 'get'):
+            elif cli_arg[0] in ('get', 'g'):
                 key = cli_arg[1]
                 if(consistency_model == 'E'):
                     ec_get(key)
                 elif(consistency_model == 'L'):
                     linear_get(key)
-            elif(cli_arg[0] in ["q", "quit", "exit"]):
+            elif cli_arg[0] == 'dump':
+                pp(key_value)
+            elif cli_arg[0] == 'delay':
+                client_sleep(cli_arg[1])
+            elif cli_arg[0] in ("q", "quit", "exit"):
                 self.running = False
                 self.listener_thread.stop()
             else:
                 print("Invalid CLI argument. Please follow this format.")
-                print("\tsend destination message")
-                print ("\tmsend message [casual, total]")
-                print("\t\"[s]witch\" to switch between total and casual ordering")
+                print("put key [integer value]")
+                print("get key")
+                print("dump")
+                print("delay [duration in millisecond]")
                 print("\t[q]uit to disconnect")
 
 # establish a connection between every pair of processes 
@@ -114,6 +121,10 @@ def client_init():
             else:
                 print("Could not connect to process " + str(pid))
 
+
+def client_sleep(ms):
+    print "Sleeping for {} ms\n".format(ms)
+    time.sleep(float(ms)/1000)
 
 # unicast functions ----------------------------------------------------------------------------------------------------------------------
 
@@ -427,16 +438,24 @@ requested = 0
 held = 0
 reply_counter = 0
 
-server_pid = int(sys.argv[1])
-consistency_model = sys.argv[2]
-if len(sys.argv) == 5:
-    write_to_count = int(sys.argv[3])
-    read_from_count = int(sys.argv[4])
+try:
+    server_pid = int(sys.argv[1])
+    consistency_model = sys.argv[2]
+    if len(sys.argv) == 5:
+        write_to_count = int(sys.argv[3])
+        read_from_count = int(sys.argv[4])
+    if consistency_model not in ("L", "E"):
+        raise ValueError("Invalid consistency model")
+except Exception as e:
+    print("Use format:\n\tpython2 server.py [SERVER_PID] [L/E]")
+    exit(1)
 
 inputs = []
 port_value = 0 
 
-with open("config1.txt", "r") as file:
+config_filename = "config1.txt"
+print("Using config file " + config_filename)
+with open(config_filename, "r") as file:
     delay = file.readline()
     for row in file:
         if(row not in ['\n', '\r\n']):
