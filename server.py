@@ -59,7 +59,7 @@ class listener_thread (threading.Thread):
 def server_init():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    # server.bind(('', port_value))
+    # server.bind(('', port_value)) # this is for config.txt
     server.bind(('', pid_to_address[server_pid][1]))
     server.listen(pid_count)
     return server 
@@ -270,6 +270,8 @@ def msg_handler(message, sender_pid, decoded_vec):
     elif(split_msg[0] == 'lput'):
         lput_handler(split_msg)
 
+# put operation which multicasts to all other replicas and increments lamport timestamp
+
 def ec_put(key, value):
     global key_to_write_counter, key_value
     timestamp = int(time.time())
@@ -282,6 +284,7 @@ def ec_put(key, value):
 
 # message format is 'put', key, value delimited by commas
 # for put, ask whether we log the last written timestamp from a replica 
+# if their timestamp is greater than ours, then we update our cache with their values 
 
 def ec_receive_put(message, sender_pid, timestamp): # recieves eput message
     global key_value, pid_to_timestamp
@@ -299,6 +302,7 @@ def ec_receive_put(message, sender_pid, timestamp): # recieves eput message
 
 
 # message format is ['put', key, 'success/failure']
+# wait until we receive at least W responses until we log the response for put
 
 def ec_receive_put_ack(message):
     global key_to_write_counter
@@ -310,6 +314,8 @@ def ec_receive_put_ack(message):
         key_to_write_counter[key] = 0
 
 # multicast the get operation to all replicas  
+# be sure to update the timestamp, since the calling machine has the most recent timestamp/values 
+
 def ec_get(key):
     global get_key_to_timestamp, get_last_writer_value, key_to_read_counter
     message = 'eget, ' + str(key)
@@ -356,7 +362,11 @@ def ec_receive_read_ack(message):
 def lput_handler(split_msg): # recieves lput
     message_queue_L.append(split_msg)
     deliver_messages(split_msg)
-    
+
+# delivery for the sequencer; sequencer checks if its counter + 1 == the sequencer's counter
+# if so, update its own key and deliver the message and then update its timestamp  
+# be sure to deliver any other messages that can be delivered in the queue afterwards 
+
 def deliver_messages(split_msg):
     _, key, value, timestamp, sequencer_pid = split_msg
     value = int(value)
@@ -376,7 +386,7 @@ def deliver_messages(split_msg):
     else:
         print "unable to deliver timestamp {} with local timestamp {}".format(timestamp, pid_to_vector_L[sequencer_pid])
 
-    
+# put request to the sequencer     
 
 def linear_put_request(key, value):
     global key_to_write_counter_L
@@ -402,15 +412,18 @@ def lputreq_handler(split_msg): # is sequencer, receives 'lputreq', sends 'lput'
         else: # update sequencer copy
             key_value[key] = value
             pp(key_value)
-    message = "lputack,{},{}".format(key, value)
+    message = "lputack,{},{}".format(key, value) # once all put requests have been sent out to every replica 
     unicast_send(sender_pid, message)
-    
+
+# log when the put method has been sent out to all replicas 
+
 def lputreqack_handler(split_msg):
     _, key, value = split_msg
     print "Recieved lputack from sequencer for {}={}".format(key, value)
     log(server_pid, 'put', key, time.time(), 'resp', None)
-    
-    
+
+# replica requests its get value from the sequencer 
+
 def lgetack_handler(split_msg):
     key = split_msg[1].strip()
     value = split_msg[2].strip()
@@ -420,6 +433,8 @@ def lgetack_handler(split_msg):
     pp(key_value)
     log(server_pid, 'get', key, int(time.time()), 'resp', value)
         
+# sequencer responds with its local value from its cache 
+
 def lgetreq_handler(split_msg): # is sequencuer, recieves lgetreq, sends lgetack
     key = split_msg[1].strip()
     sender = int(split_msg[2].strip())
@@ -486,7 +501,8 @@ with open(config_filename, "r") as file:
         if(row not in ['\n', '\r\n']):
             stripped = row.strip()
             pid, hostname, port = stripped.split(' ')
-            port_value = int(port)+pid_count # change this to port_value = int(port) when using config.txt 
+            port_value = int(port)+pid_count 
+            # port_value = int(port) # this is for config.txt
             pid = int(pid)
             ip = socket.gethostbyname(hostname)
             client_address = (ip, port_value)
