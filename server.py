@@ -259,12 +259,16 @@ def msg_handler(message, sender_pid, decoded_vec):
         ec_receive_get(split_msg, sender_pid)
     elif(split_msg[0] == 'eget_ack' and key_to_read_counter[split_msg[1].strip()] != 0): 
         ec_receive_read_ack(split_msg)
-    elif(split_msg[0] == 'lputrequest'):
-        linear_put_request_receive(split_msg)
-    elif(split_msg[0] == 'lreply'):
-        linear_receive_ack(split_msg)
+    elif split_msg[0] == 'lgetreq':
+        lgetreq_handler(split_msg)
+    elif split_msg[0] == 'lgetack':
+        lgetack_handler(split_msg)
+    elif(split_msg[0] == 'lputreq'):
+        lputreq_handler(split_msg)
+    elif split_msg[0] == 'lputack':
+        lputreqack_handler(split_msg)
     elif(split_msg[0] == 'lput'):
-        linear_put_received(split_msg)
+        lput_handler(split_msg)
 
 def ec_put(key, value):
     global key_to_write_counter, key_value
@@ -279,7 +283,7 @@ def ec_put(key, value):
 # message format is 'put', key, value delimited by commas
 # for put, ask whether we log the last written timestamp from a replica 
 
-def ec_receive_put(message, sender_pid, timestamp):
+def ec_receive_put(message, sender_pid, timestamp): # recieves eput message
     global key_value, pid_to_timestamp
     key = message[1].strip()
     old_timestamp = pid_to_timestamp[server_pid]
@@ -349,84 +353,87 @@ def ec_receive_read_ack(message):
 
 # --------------------------------------------------------------------------------------------------------------------------------------
 
-def linear_put_request(key, value):
-    global requested, key_to_write_counter_L
-    requested = 1
-    message = 'lputrequest, ' + str(pid_to_timestamp[server_pid]+1) + ', ' + str(server_pid) + ', ' + key + ', ' + str(value)
-    key_to_write_counter_L[str(key)+str(value)] = 1 # include write to itself  
-    timestamp = int(time.time())
-    log(server_pid, 'put', key, timestamp, 'req', value)
-    lamport_send(message)
-
-def linear_put_request_receive(split_msg): # receives 'lputrequest'
-    sender_timestamp, sender_pid, mkey, mvalue = _unpack_strip_cast(split_msg)
-    print("\nReceived PUT request {}={} from server {}".format(mkey, mvalue, sender_pid))
-    print("\theld={}, requested={}".format(held, requested))
-    lexicographical_comparison([sender_timestamp, sender_pid], [pid_to_timestamp[server_pid],server_pid])
-    if held == 1 or (requested == 1 and \
-        lexicographical_comparison([sender_timestamp, sender_pid], [pid_to_timestamp[server_pid],server_pid])):
+def lput_handler(split_msg): # recieves lput
+    message_queue_L.append(split_msg)
+    deliver_messages(split_msg)
     
-        print('\tQueued PUT request {}={} from server {}\n'.format(mkey, mvalue, sender_pid))
-        request_queue.append(split_msg)
-    else:
-        reply_to_request(split_msg)
-
-def reply_to_request(split_msg):
-    sender_timestamp, sender_pid, mkey, mvalue = _unpack_strip_cast(split_msg)
-    reply_msg = "lreply,{},{},{}".format(server_pid, mkey, mvalue)
-    print('Replying to PUT request {}={} from server {}\n'.format(mkey, mvalue, sender_pid))
-    unicast_send(sender_pid, reply_msg) 
-
-def lexicographical_comparison(vector1, vector2):
-    if vector1[0] == vector2[0]:
-        return lexicographical_comparison(vector1[1:], vector2[1:])
-    return vector1[0] > vector2[0]
-
-def linear_receive_ack(split_msg): # receives 'lreply'
-    global reply_counter, requested, held, key_to_write_counter_L
-    _, sender_pid, key, value = split_msg
-    sender_pid = int(sender_pid)
-    key = key.strip()
+def deliver_messages(split_msg):
+    _, key, value, timestamp, sequencer_pid = split_msg
     value = int(value)
+    timestamp = int(timestamp)
+    sequencer_pid = int(sequencer_pid)
     
-    key_to_write_counter_L[str(key)+str(value)] += 1
-    # print "\nACK for {}={} recieved from server {}. Total ACKs: {}".format(key, value, sender_pid, key_to_write_counter_L[str(key)+str(value)])
-    if key_to_write_counter_L[str(key)+str(value)] == len(pid_to_socket):
-        print('Process ' + str(server_pid) + ' is now in state HELD')
-        held = 1
+    if pid_to_vector_L[sequencer_pid] + 1 == timestamp:
+        print "Replica delivered {}={} from sequencer".format(key, value)
+        # update own key
         key_value[key] = value
         pp(key_value)
-        linear_put(key, value)
-        held = 0 
-        print('Process ' + str(server_pid) + ' is no longer in HELD\n')
-        requested = 0
-        key_to_write_counter_L[str(key)+str(value)] = 0
-        for request in request_queue:
-            reply_to_request(request)
-        del request_queue[:]
-
-def linear_put(key, value):
-    multicast_send('lput, ' + key + ', ' + str(value) + ', ' + str(pid_to_timestamp[server_pid]))
-    timestamp = int(time.time())
-    log(server_pid, 'put', key, timestamp, 'resp', value)
-
-def linear_put_received(split_msg): # receives 'lput'
-    key = split_msg[1].strip()
-    value = int(split_msg[2])
-    lamport_timestamp = int(split_msg[-1])
-    if(lamport_timestamp > pid_to_timestamp[server_pid]):
-        pid_to_timestamp[server_pid] = lamport_timestamp + 1
+        pid_to_vector_L[sequencer_pid] += 1
+        
+        message_queue_L.remove(split_msg)
+        for split_msg in message_queue_L:
+            deliver_messages(split_msg)    
     else:
-        pid_to_timestamp[server_pid] += 1
+        print "unable to deliver timestamp {} with local timestamp {}".format(timestamp, pid_to_vector_L[sequencer_pid])
+
+    
+
+def linear_put_request(key, value):
+    global key_to_write_counter_L
+    sequencer_pid = min(pid_to_socket.keys()) # lowest PID is sequencer
+    print "Sending lputreq {}={} to sequencer {}".format(key, value, sequencer_pid)
+    message = 'lputreq,{},{},{}'.format(key, value, server_pid)
+    timestamp = int(time.time())
+    log(server_pid, 'put', key, timestamp, 'req', value)
+    unicast_send(sequencer_pid, message)
+
+def lputreq_handler(split_msg): # is sequencer, receives 'lputreq', sends 'lput'
+    key = split_msg[1].strip()
+    value = split_msg[2].strip()
+    sender_pid = split_msg[3].strip()
+    print "Sequencer recieved PUT REQUEST {}={} from server {}".format(key, value, sender_pid)
+    # send to everyone, with timestamps
+    for recip_pid in pid_to_socket.keys():
+        if recip_pid != server_pid:
+            pid_to_vector_L[recip_pid] += 1
+            
+            message = "lput,{},{},{},{}".format(key, value, pid_to_vector_L[recip_pid], server_pid)
+            unicast_send(recip_pid, message)
+        else: # update sequencer copy
+            key_value[key] = value
+            pp(key_value)
+    message = "lputack,{},{}".format(key, value)
+    unicast_send(sender_pid, message)
+    
+def lputreqack_handler(split_msg):
+    _, key, value = split_msg
+    print "Recieved lputack from sequencer for {}={}".format(key, value)
+    log(server_pid, 'put', key, time.time(), 'resp', None)
+    
+    
+def lgetack_handler(split_msg):
+    key = split_msg[1].strip()
+    value = split_msg[2].strip()
+    sequencer_pid = min(pid_to_socket.keys()) # lowest PID is sequencer
+    print("Recieved {}={} from sequencer {}".format(key, value, sequencer_pid))
     key_value[key] = value
     pp(key_value)
-
-def linear_get(key):
+    log(server_pid, 'get', key, int(time.time()), 'resp', value)
+        
+def lgetreq_handler(split_msg): # is sequencuer, recieves lgetreq, sends lgetack
+    key = split_msg[1].strip()
+    sender = int(split_msg[2].strip())
+    local_value = key_value.get(key, None)
+    print "Sequencer responding with {}={} to {}".format(key, local_value, sender)
+    message = "lgetack,{},{}".format(key, local_value)
+    unicast_send(sender, message)
+    
+def linear_get(key): # recieves none, sends lgetreq
     log(server_pid, 'get', key, int(time.time()), 'req', None)
-    return_value = key_value.get(key, None)
-    log(server_pid, 'get', key, int(time.time()), 'resp', return_value)
-    print('Received the value: ' + str(return_value) + '\n')
-    return return_value
+    sequencer_pid = min(pid_to_socket.keys()) # lowest PID is sequencer
+    message = "lgetreq,{},{}".format(key, server_pid)
+    unicast_send(sequencer_pid, message)
+    print("Sent {} to sequencer {}".format(message, sequencer_pid))
 
 # entry point --------------------------------------------------------------------------------------------------------------------------
 
@@ -488,6 +495,12 @@ with open(config_filename, "r") as file:
             pid_count = pid_count + 1 
 
 pid_to_timestamp[server_pid] = 0
+
+pid_to_vector_L = {}
+for pid in range(1, pid_count+1):
+    pid_to_vector_L[pid] = 0
+message_queue_L = []
+
 lamport_fmt_string = get_lamport_fmt_string()
 unicast_fmt_string = get_unicast_fmt_string()
 server_binding_addr = pid_to_address[server_pid]
